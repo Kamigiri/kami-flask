@@ -6,6 +6,15 @@ Release: move **Unreleased** to a dated version, bump `pyproject.toml` and
 
 ## Unreleased
 
+## 0.2.0 (2026-10-16)
+
+- Gateway auth next to the local login: with `GATEWAY_SECRET` set, `Remote-User` is trusted only
+  when `X-Kami-Gateway` carries the secret (constant-time compare). Order: gateway, Bearer, session.
+  Without a valid secret the header is ignored. Gateway writes still need `X-Requested-With`.
+- `/api/auth/me` reports `{"auth": "gateway", "logout_url": GATEWAY_LOGOUT_URL}` for gateway users;
+  request logs show the gateway user; a short `GATEWAY_SECRET` is flagged by `unsafe_settings()`.
+- pytest plugin: `gateway_client` fixture.
+
 ## 0.1.0 (2026-10-16)
 
 - `KamiApp`: settings with production refusal of default secrets, single-user auth

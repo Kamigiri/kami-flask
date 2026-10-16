@@ -5,13 +5,20 @@ The shared Flask backend framework for the Kamigiri apps. One `KamiApp` gives an
 - **Settings** from the environment, with `APP_ENV=production` refusing default secrets
 - **Auth**: single-user session login (`/api/auth/login|logout|me`), optional Bearer
   `API_TOKEN`, login throttle, `X-Requested-With` required for cookie-authed writes
+- **Gateway auth** (optional): behind a reverse proxy that authenticates users (Authelia and
+  nginx `auth_request`), set `GATEWAY_SECRET`. The guard then trusts `Remote-User` only on
+  requests that also carry the same secret in `X-Kami-Gateway` (constant-time compare); the
+  proxy must set both headers itself and strip client-sent copies. Order: gateway, Bearer,
+  session, so the local login keeps working for clients that bypass the proxy.
+  `/api/auth/me` reports `{"auth": "gateway", "logout_url": GATEWAY_LOGOUT_URL}`; writes
+  still need `X-Requested-With`. Leave `GATEWAY_SECRET` empty to turn it off.
 - **Platform contract**: `/api/health` (liveness), `/api/ready` (DB check), `/api/version`
   (version + git revision from the image)
 - **Logs**: one JSON line per request on stdout (`request_id`, route, status, duration, user)
 - **Metrics**: Prometheus on `METRICS_PORT` (not proxied by nginx), RED metrics per route,
   `app_info`, errors, and background jobs via `job("name")`
 - **Errors** as `{"error": msg}` (short names for werkzeug defaults, e.g. `"Not Found"`), **SPA serving** (WhiteNoise + index.html fallback)
-- **pytest plugin**: `client` (logged in), `anon_client`, `bearer_client`
+- **pytest plugin**: `client` (logged in), `anon_client`, `bearer_client`, `gateway_client`
 
 ```python
 from dataclasses import dataclass

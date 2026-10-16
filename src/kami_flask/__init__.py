@@ -9,5 +9,5 @@ from .app import KamiApp
 from .jobs import job
 from .settings import Settings, env
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["KamiApp", "Settings", "env", "job", "__version__"]

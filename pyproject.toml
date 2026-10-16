@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kami-flask"
-version = "0.1.0"
+version = "0.2.0"
 description = "Shared Flask backend framework for the Kamigiri apps: auth, health, logs, metrics, jobs."
 readme = "README.md"
 license = "MIT"

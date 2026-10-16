@@ -47,6 +47,11 @@ class Settings:
     auth_password: str = env("AUTH_PASSWORD", "admin")
     api_token: str = env("API_TOKEN", "")  # optional Bearer token for scripts and apps
 
+    # Gateway auth: a reverse proxy (Authelia behind nginx) sends Remote-User plus this shared
+    # secret in X-Kami-Gateway. Empty secret = gateway auth off, Remote-User is ignored.
+    gateway_secret: str = env("GATEWAY_SECRET", "")
+    gateway_logout_url: str = env("GATEWAY_LOGOUT_URL", "")  # where the SPA sends "log out"
+
     session_cookie_secure: bool = env("SESSION_COOKIE_SECURE", False)
     session_cookie_name: str = env("SESSION_COOKIE_NAME", "")  # default: <app>_session
     session_days: int = env("SESSION_DAYS", 14)
@@ -78,6 +83,11 @@ class Settings:
         # Empty = Bearer auth off. A set token grants full API access, so it must be long.
         if self.api_token and (self.api_token.startswith("change-me") or len(self.api_token) < MIN_SECRET_LENGTH):
             problems.append("API_TOKEN")
+        # Empty = gateway auth off. A set secret lets the proxy vouch for any user, so it must be long.
+        if self.gateway_secret and (
+            self.gateway_secret.startswith("change-me") or len(self.gateway_secret) < MIN_SECRET_LENGTH
+        ):
+            problems.append("GATEWAY_SECRET")
         return problems
 
     def flask_config(self) -> dict[str, Any]:

@@ -36,6 +36,18 @@ def _kami() -> KamiApp:
     return current_app.extensions["kami"]
 
 
+def gateway_user() -> str | None:
+    """The user vouched for by the trusted gateway, or None.
+
+    Needs a configured secret, a matching ``X-Kami-Gateway`` header (constant-time) and a
+    non-empty ``Remote-User``. Without the secret the user header is ignored completely.
+    """
+    secret = _kami().settings.gateway_secret
+    if not secret or not same(request.headers.get("X-Kami-Gateway", ""), secret):
+        return None
+    return request.headers.get("Remote-User", "").strip() or None
+
+
 def bearer_ok() -> bool:
     token = _kami().settings.api_token
     if not token:
@@ -76,12 +88,23 @@ def init(app: Flask) -> None:
         if not path.startswith("/api") or path in OPEN_PATHS:
             return None
 
-        bearer = bearer_ok()
+        gateway = gateway_user()
+        bearer = not gateway and bearer_ok()
         user = session.get("auth_user")
-        if not bearer and not user:
+        if gateway:
+            g.kami_user, g.kami_auth = gateway, "gateway"
+        elif bearer:
+            g.kami_user, g.kami_auth = "token", "token"
+        elif user:
+            g.kami_user, g.kami_auth = user, "session"
+        else:
             return jsonify({"error": "Not authenticated"}), 401
-        g.kami_user = user or "token"
-        if request.method in MUTATING_METHODS and not bearer and request.headers.get("X-Requested-With") != "XMLHttpRequest":
+        # Gateway and session auth are cookie-based, so writes need the XHR header; Bearer is exempt.
+        if (
+            request.method in MUTATING_METHODS
+            and not bearer
+            and request.headers.get("X-Requested-With") != "XMLHttpRequest"
+        ):
             return jsonify({"error": "Missing X-Requested-With header"}), 403
         return None
 
@@ -119,6 +142,9 @@ def logout():
 
 @bp.get("/me")
 def me():
+    gateway = gateway_user()
+    if gateway:
+        return jsonify({"username": gateway, "auth": "gateway", "logout_url": _kami().settings.gateway_logout_url})
     if session.get("auth_user"):
         return jsonify({"username": session["auth_user"], "auth": "session"})
     if bearer_ok():

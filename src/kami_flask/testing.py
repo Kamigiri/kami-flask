@@ -6,6 +6,7 @@ fixtures here build on it:
 - ``client``: logged in with the app's credentials, sends ``X-Requested-With`` like the SPA.
 - ``anon_client``: same client class, not logged in.
 - ``bearer_client``: no session, ``Authorization: Bearer <api token>`` on every request.
+- ``gateway_client``: no session, sends ``Remote-User`` + ``X-Kami-Gateway`` like the proxy does.
 
 ``app.test_client()`` stays a plain FlaskClient, for tests that need the raw behaviour
 (e.g. checking the CSRF header requirement).
@@ -19,6 +20,8 @@ from flask.testing import FlaskClient
 from werkzeug.datastructures import Headers
 
 TEST_API_TOKEN = "kami-test-api-token-0123456789"
+TEST_GATEWAY_SECRET = "kami-test-gateway-secret-0123456789"
+TEST_GATEWAY_USER = "owner"
 
 
 class KamiTestClient(FlaskClient):
@@ -37,10 +40,15 @@ class KamiTestClient(FlaskClient):
         return super().open(*args, **kwargs)
 
 
-def make_client(app: Flask, *, login: bool = False, bearer: str | None = None) -> KamiTestClient:
+def make_client(
+    app: Flask, *, login: bool = False, bearer: str | None = None, gateway: str | None = None
+) -> KamiTestClient:
     client = KamiTestClient(app, app.response_class, use_cookies=True)
     if bearer:
         client.extra_headers = {"Authorization": f"Bearer {bearer}"}
+    if gateway:
+        secret = app.extensions["kami"].settings.gateway_secret
+        client.extra_headers = {"Remote-User": gateway, "X-Kami-Gateway": secret}
     if login:
         settings = app.extensions["kami"].settings
         resp = client.post(
@@ -66,3 +74,11 @@ def bearer_client(app: Flask) -> KamiTestClient:
     if not settings.api_token:
         settings.api_token = TEST_API_TOKEN
     return make_client(app, bearer=settings.api_token)
+
+
+@pytest.fixture
+def gateway_client(app: Flask) -> KamiTestClient:
+    settings = app.extensions["kami"].settings
+    if not settings.gateway_secret:
+        settings.gateway_secret = TEST_GATEWAY_SECRET
+    return make_client(app, gateway=TEST_GATEWAY_USER)
