@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77"]  # SPDX string `license`
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kami-flask"
+version = "0.1.0"
+description = "Shared Flask backend framework for the Kamigiri apps: auth, health, logs, metrics, jobs."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "Flask>=3.0",
+    "whitenoise>=6.6",
+    "prometheus-client>=0.20",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff==0.14.0"]
+
+[project.urls]
+Repository = "https://github.com/Kamigiri/kami-flask"
+
+# Auto-loads the fixtures in kami_flask.testing (client, anon_client, bearer_client).
+[project.entry-points.pytest11]
+kami_flask = "kami_flask.testing"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# Kamigiri baseline (keep in sync with kamigiri/shared/config/ruff.toml)
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = [".venv", "venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "E712", "E741"]
