@@ -6,6 +6,17 @@ Release: move **Unreleased** to a dated version, bump `pyproject.toml` and
 
 ## Unreleased
 
+## 0.3.0 (2026-11-12)
+
+- `kami_flask.sync` (optional extra `kami-flask[sync]`, SQLAlchemy only there): the offline-first sync server
+  extracted from tasks. `register(db, SyncSpec(...))` stamps `change_seq` on every flush, writes tombstones
+  (parent-covers-child, `tombstone_children`, `StampsParent`), serves the change feed with the cursor cap and 410
+  (`StaleCursor`), applies the mutation queue (statuses applied | duplicate | rejected | failed, 4xx -> rejected,
+  restamping of untouched rows, one handler per entity) and offers `prune` and `force_resync`.
+- The bookkeeping tables keep the tasks names (`sync_state`, `tombstones`, `applied_ops`, `change_seq`), so
+  existing databases need no migration. The library owns no metadata: the models are built on the app's `db`.
+- Apps without `[sync]` gain no dependency.
+
 ## 0.2.0 (2026-10-16)
 
 - Gateway auth next to the local login: with `GATEWAY_SECRET` set, `Remote-User` is trusted only
