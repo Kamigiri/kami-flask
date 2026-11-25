@@ -11,6 +11,18 @@ Release: move **Unreleased** to a dated version, bump `pyproject.toml` and
 - `kami_flask.claude_runner`: client for the platform's internal Claude runner (headless Claude Code without tools):
   `RunnerClient(url, token, client)` with `run(...)` -> `RunResult` and `limits()`, `image_block` / `text_block`, and
   `FakeRunner` (same interface) for app tests. Standard library only, no new dependency.
+- `kami_flask.sync` works with plain SQLAlchemy (additive; `register(db, spec)` is unchanged):
+  `register_sqlalchemy(base, session, spec, bind=..., run_after=...)` stamps on the `Session` class (every session),
+  checks that the app's own `before_flush` listeners run first, and keeps its bookkeeping models on a separate
+  registry (same table names).
+- `Entity.id_attr` (default `id`): a wire-only id such as `uid` on an integer-keyed model, used by the feed's
+  tombstones, `tombstone_children` and the restamp. Foreign keys keep using the primary key.
+- `Sync.stamp(session, obj)` for writes that skip the flush listener. `prune()` / `force_resync()` may be called
+  without a session.
+- Handlers need not commit or flush: the library flushes after the handler, so a constraint error counts against
+  that op (`failed`) instead of ending the request with a 500.
+- Behaviour fix, both ways of registering: a `stamps_parents` child now also restamps its parent when it is deleted,
+  and when it is added with only its foreign key set.
 
 ## 0.3.0 (2026-11-12)
 

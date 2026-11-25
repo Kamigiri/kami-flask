@@ -1,5 +1,8 @@
 """The sync engine: change stamping, the change feed, the mutation queue, prune and force_resync.
 
+Two ways in: ``register(db, spec)`` for Flask-SQLAlchemy and ``register_sqlalchemy(base, session, spec, bind=...)``
+for plain SQLAlchemy.
+
 Everything here is SQLite-flavoured raw SQL on the bookkeeping tables (RETURNING, ON CONFLICT, INSERT OR IGNORE).
 Never use bulk ``query.update()`` / ``query.delete()`` on a synced model: it skips the flush listener.
 """
@@ -8,14 +11,16 @@ from __future__ import annotations
 
 import logging
 import weakref
+from collections.abc import Callable, Iterable
 from datetime import timedelta
 from typing import Any
 
 from flask import Flask, jsonify
 from sqlalchemy import event, inspect, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import MANYTOONE, Session, sessionmaker
+from sqlalchemy.orm.attributes import set_committed_value
 
-from .models import models_for, utcnow
+from .models import PLAIN_MODELS, models_for, plain_metadata, utcnow
 from .spec import OP_ID_RE, Entity, Rejected, SyncSpec
 
 logger = logging.getLogger("kami.sync")
@@ -52,6 +57,76 @@ def register(db: Any, spec: SyncSpec) -> Sync:
     return sync
 
 
+_plain_syncs: weakref.WeakKeyDictionary[Any, PlainSync] = weakref.WeakKeyDictionary()
+
+
+def register_sqlalchemy(
+    base: Any,
+    session: Callable[[], Session],
+    spec: SyncSpec,
+    *,
+    bind: Any,
+    run_after: Iterable[Callable[..., Any]] = (),
+) -> PlainSync:
+    """Wire sync to a plain-SQLAlchemy app (no Flask-SQLAlchemy).
+
+    ``base`` is the app's declarative base. ``session`` returns the session that ``changes``, ``apply_mutations``,
+    ``prune`` and ``force_resync`` work on (``lambda: g.db``, or a ``scoped_session``). Stamping is attached to the
+    ``Session`` class, so every session stamps, however it was built. The bookkeeping tables are created on ``bind``
+    now, and again by any later ``base.metadata.create_all``.
+
+    ``run_after``: the app's own ``before_flush`` listeners on ``Session`` that change synced columns. Listeners
+    fire in registration order, so each must already be registered (ValueError otherwise).
+
+    Idempotent per ``base``: a later call keeps the first spec and listener, takes the new ``session`` and creates
+    the tables on the new ``bind``.
+    """
+    if isinstance(session, sessionmaker) or not callable(session):
+        raise TypeError("session must be a callable returning the current session, not a sessionmaker or a Session")
+    sync = _plain_syncs.get(base)
+    if sync is None:
+        for listener in run_after:
+            if not event.contains(Session, "before_flush", listener):
+                name = getattr(listener, "__name__", listener)
+                raise ValueError(f"sync: {name} must be a before_flush listener on Session before register_sqlalchemy")
+        sync = _plain_syncs[base] = PlainSync(session, spec)
+        event.listen(base.metadata, "after_create", sync._after_create)
+    sync._get_session = session
+    sync.create_tables(bind)
+    return sync
+
+
+def _pk(obj: object) -> Any:
+    """The internal identity (what foreign keys point at), which need not be the wire id."""
+    values = inspect(obj).mapper.primary_key_from_instance(obj)
+    return values[0] if len(values) == 1 else tuple(values)
+
+
+def _column(model: type, attr: str) -> str:
+    """The column name behind a mapped attribute."""
+    columns = inspect(model).columns
+    if attr not in columns:
+        raise ValueError(f"sync spec: {model.__name__}.{attr} is not a mapped column")
+    return columns[attr].name
+
+
+def _parent_of(session: Session, child: object, attr: str) -> Any:
+    """The parent object. A pending child that only has its foreign key set loads nothing through the relationship,
+    so the parent is looked up by that key."""
+    parent = getattr(child, attr, None)
+    if parent is not None:
+        return parent
+    relation = inspect(type(child)).relationships.get(attr)
+    if relation is None or relation.direction is not MANYTOONE or len(relation.local_remote_pairs) != 1:
+        return None
+    local, remote = relation.local_remote_pairs[0]
+    value = getattr(child, relation.parent.get_property_by_column(local).key)
+    if value is None or list(relation.mapper.primary_key) != [remote]:
+        return None
+    with session.no_autoflush:
+        return session.get(relation.mapper.class_, value)
+
+
 def _int_arg(raw: str | None, name: str, default: int) -> int:
     if raw in (None, ""):
         return default
@@ -86,8 +161,12 @@ def _collections_changed(obj: object, names: tuple[str, ...]) -> bool:
 class Sync:
     def __init__(self, db: Any, spec: SyncSpec) -> None:
         self.db = db
-        self.spec = spec
         self.models = models_for(db)
+        self._setup(spec)
+        event.listen(db.session, "before_flush", self._before_flush)
+
+    def _setup(self, spec: SyncSpec) -> None:
+        self.spec = spec
         self._by_model = {e.model: e for e in spec.entities}
         self._by_name = {e.name: e for e in spec.entities}
         self._stamps_parent = {s.model: s for s in spec.stamps_parents}
@@ -95,7 +174,15 @@ class Sync:
         self._parent_models = {e.parent[0] for e in spec.entities if e.parent} | {
             e.model for e in spec.entities if e.tombstone_children
         }
-        event.listen(db.session, "before_flush", self._before_flush)
+        for e in spec.entities:  # a mistyped id_attr should fail at startup, not on the first delete
+            if e.id_attr != "id":
+                _column(e.model, e.id_attr)
+
+    def _session(self) -> Session:
+        return self.db.session
+
+    def _query(self, model: type):
+        return model.query
 
     def init_app(self, app: Flask) -> None:
         """JSON answers for SyncError (400 / 410), next to the app's own error handlers."""
@@ -130,15 +217,43 @@ class Sync:
             {"e": entity, "i": entity_id, "s": seq, "d": utcnow()},
         )
 
+    def stamp(self, session: Session, obj: object) -> int | None:
+        """Give a synced row a fresh seq right now, for writes the flush listener cannot see (bulk updates, core
+        statements). Runs in the session's transaction; the caller commits. A ``stamps_parents`` child stamps its
+        parent. Returns the seq, or None if there was no persistent row to stamp (a pending object is left to the
+        flush). Deletes must go through the ORM, so that they write a tombstone."""
+        model = type(obj)
+        if model in self._stamps_parent:
+            parent = _parent_of(session, obj, self._stamps_parent[model].parent_attr)
+            return None if parent is None else self.stamp(session, parent)
+        if model not in self._by_model:
+            raise ValueError(f"sync: {model.__name__} is not a synced model")
+        state = inspect(obj)
+        if state.identity is None:
+            return None
+        seq = self.next_seq(session)
+        keys = {f"k{i}": value for i, value in enumerate(state.identity)}
+        where = " AND ".join(f"{column.name} = :k{i}" for i, column in enumerate(state.mapper.primary_key))
+        # Textual SQL: no flush listener, and no `onupdate` column defaults (updated_at stays).
+        session.connection().execute(
+            text(f"UPDATE {model.__tablename__} SET change_seq = :s WHERE {where}"), {"s": seq, **keys}
+        )
+        set_committed_value(obj, "change_seq", seq)
+        return seq
+
     def _before_flush(self, session: Session, _flush_context, _instances) -> None:
         conn = None
         new, dirty, deleted = list(session.new), list(session.dirty), list(session.deleted)
 
         # Collect first: session.deleted is unordered, and a parent being deleted must not be restamped.
-        gone: dict[type, set[str]] = {}
+        # Primary keys, not wire ids: they are compared with foreign keys.
+        gone: dict[type, set[Any]] = {}
         for obj in deleted:
             if type(obj) in self._parent_models:
-                gone.setdefault(type(obj), set()).add(obj.id)
+                gone.setdefault(type(obj), set()).add(_pk(obj))
+
+        def is_gone(obj: object) -> bool:
+            return type(obj) in gone and _pk(obj) in gone[type(obj)]
 
         stamped: set[int] = set()
 
@@ -148,8 +263,8 @@ class Sync:
                 obj.change_seq = self.next_seq(session)
 
         def stamp_parent(child: object) -> None:
-            parent = getattr(child, self._stamps_parent[type(child)].parent_attr, None)
-            if parent is not None and parent.id not in gone.get(type(parent), ()) and parent not in session.deleted:
+            parent = _parent_of(session, child, self._stamps_parent[type(child)].parent_attr)
+            if parent is not None and not is_gone(parent) and parent not in session.deleted:
                 stamp(parent)
 
         for obj in new:
@@ -173,7 +288,7 @@ class Sync:
                 if obj in session.deleted:
                     continue
                 if _changed(obj, entity.columns) or _collections_changed(obj, entity.collections):
-                    if obj.id not in gone.get(model, ()):
+                    if not is_gone(obj):
                         stamp(obj)
             elif model in self._stamps_parent and session.is_modified(obj):
                 if _changed(obj, self._stamps_parent[model].columns):
@@ -182,23 +297,31 @@ class Sync:
         for obj in deleted:
             entity = self._by_model.get(type(obj))
             if entity is None:
+                if type(obj) in self._stamps_parent:  # a removed child changes its parent
+                    stamp_parent(obj)
                 continue
             if entity.parent and getattr(obj, entity.parent[1]) in gone.get(entity.parent[0], ()):
                 continue  # covered by the parent's tombstone
             conn = conn or session.connection()
-            self._tombstone(conn, entity.name, entity.id_of(obj), self.next_seq(session))
+            ident = entity.id_of(obj)
+            if ident:  # a row without a wire id never reached a client
+                self._tombstone(conn, entity.name, ident, self.next_seq(session))
             if entity.tombstone_children:
                 table, fk, name = entity.tombstone_children
-                rows = conn.execute(text(f"SELECT id FROM {table} WHERE {fk} = :p"), {"p": obj.id}).scalars().all()
-                for child_id in rows:
-                    self._tombstone(conn, name, child_id, self.next_seq(session))
+                child = self._by_name.get(name)
+                column = _column(child.model, child.id_attr) if child and child.id_attr != "id" else "id"
+                rows = conn.execute(text(f"SELECT {column} FROM {table} WHERE {fk} = :p"), {"p": _pk(obj)})
+                for child_id in rows.scalars().all():
+                    if child_id:
+                        self._tombstone(conn, name, child_id, self.next_seq(session))
 
     # ---- prune / force_resync ---------------------------------------------------------------------------------
 
-    def prune(self, session: Session) -> dict[str, int]:
+    def prune(self, session: Session | None = None) -> dict[str, int]:
         """Drop old tombstones and old applied ops, in chunks. pruned_below rises to the highest pruned tombstone
         seq in the same transaction: a cursor below it may have missed a delete (410), a cursor at or above it has
-        not."""
+        not. Commits."""
+        session = session if session is not None else self._session()
         spec = self.spec
         conn = session.connection()
         tomb_cutoff = utcnow() - timedelta(days=spec.tombstone_days)
@@ -246,13 +369,14 @@ class Sync:
             logger.info(f"Sync prune: {removed_tombstones} tombstones, {removed_ops} applied ops")
         return {"tombstones": removed_tombstones, "appliedOps": removed_ops}
 
-    def force_resync(self, session: Session) -> int:
+    def force_resync(self, session: Session | None = None) -> int:
         """After a restore (or a rollback to an image without stamping): every client must resync from 0.
 
         A restored database may be *behind* the clients' cursors, so the counter jumps far ahead and every cursor
         handed out before is below pruned_below (410 -> full resync); a full pull ends exactly at it.
-        Returns pruned_below.
+        Returns pruned_below. Commits.
         """
+        session = session if session is not None else self._session()
         self.next_seq(session)  # makes sure the row exists
         session.execute(
             text("UPDATE sync_state SET last_seq = last_seq + :j, pruned_below = last_seq + :j WHERE id = 1"),
@@ -265,7 +389,7 @@ class Sync:
     # ---- change feed ------------------------------------------------------------------------------------------
 
     def _state(self) -> tuple[int, int]:
-        state = self.db.session.get(self.models.SyncState, 1)
+        state = self._session().get(self.models.SyncState, 1)
         return (state.last_seq, state.pruned_below) if state else (0, 0)
 
     def changes(self, since_raw: str | None, limit_raw: str | None) -> dict[str, Any]:
@@ -285,7 +409,8 @@ class Sync:
 
         def window(model):
             return (
-                model.query.filter(model.change_seq > since, model.change_seq <= last_seq)
+                self._query(model)
+                .filter(model.change_seq > since, model.change_seq <= last_seq)
                 .order_by(model.change_seq)
                 .limit(limit + 1)
                 .all()
@@ -335,13 +460,13 @@ class Sync:
         return op_id, entity, op, entity_id, fields
 
     def _rejected(self, results: list[dict[str, Any]], op_id: str | None, code: str, message: str) -> None:
-        self.db.session.rollback()
+        self._session().rollback()
         results.append({"opId": op_id, "status": "rejected", "error": code, "message": message})
         if op_id and OP_ID_RE.fullmatch(op_id):
             self._remember(op_id)
 
     def _failed(self, results: list[dict[str, Any]], op_id: str | None, error: Exception) -> None:
-        self.db.session.rollback()
+        self._session().rollback()
         # The type only: SQL parameters and upstream errors can hold titles, notes and tokens.
         logger.warning(f"Mutation {op_id} failed, client will retry: {type(error).__name__}")
         results.append(
@@ -369,10 +494,13 @@ class Sync:
             op_id = raw.get("opId") if isinstance(raw, dict) and isinstance(raw.get("opId"), str) else None
             try:
                 op_id, entity, op, entity_id, fields = self._validate(raw)
-                if self.db.session.get(self.models.AppliedOp, op_id):
+                if self._session().get(self.models.AppliedOp, op_id):
                     results.append({"opId": op_id, "status": "duplicate"})
                     continue
                 restamp = entity.handler(ctx, op, entity_id, fields)
+                # Handlers need not commit or flush: flush errors belong to this op, and the restamp below is
+                # raw SQL that must see the handler's rows (sessions with autoflush off).
+                self._session().flush()
             except Rejected as r:
                 self._rejected(results, op_id, r.code, r.message)
                 continue
@@ -396,7 +524,7 @@ class Sync:
         back. An entity that no longer exists restamps its tombstone instead, if `restamp_tombstone` is set."""
         if not op_id:
             return
-        session = self.db.session
+        session = self._session()
         if touch:
             entity, ident = touch
             seq = self.next_seq(session)
@@ -404,7 +532,8 @@ class Sync:
             if entity.restamp_where:
                 where, params = entity.restamp_where(ident)
             else:
-                where, params = "id = :i", {"i": ident}
+                column = "id" if entity.id_attr == "id" else _column(entity.model, entity.id_attr)
+                where, params = f"{column} = :i", {"i": ident}
             hit = session.execute(
                 text(f"UPDATE {table} SET change_seq = :s WHERE {where}"), {"s": seq, **params}
             ).rowcount
@@ -418,3 +547,27 @@ class Sync:
             {"o": op_id, "t": utcnow()},
         )
         session.commit()
+
+
+class PlainSync(Sync):
+    """``Sync`` for plain SQLAlchemy: built by ``register_sqlalchemy``."""
+
+    def __init__(self, session: Callable[[], Session], spec: SyncSpec) -> None:
+        self.db = None
+        self.models = PLAIN_MODELS
+        self._get_session = session
+        self._setup(spec)
+        event.listen(Session, "before_flush", self._before_flush)
+
+    def _session(self) -> Session:
+        return self._get_session()
+
+    def _query(self, model: type):
+        return self._session().query(model)
+
+    def create_tables(self, bind: Any) -> None:
+        """Create the bookkeeping tables that are missing."""
+        plain_metadata.create_all(bind)
+
+    def _after_create(self, _target, connection, **_kw) -> None:
+        plain_metadata.create_all(connection)

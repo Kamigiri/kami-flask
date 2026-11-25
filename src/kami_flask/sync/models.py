@@ -1,8 +1,9 @@
 """Bookkeeping tables: the sequence counter, tombstones and applied ops.
 
 The table and column names are fixed (``sync_state``, ``tombstones``, ``applied_ops``) so an app that had them
-before the extraction needs no migration. The library owns no metadata: the models are built on the app's own
-``db.Model`` the first time they are asked for, and cached per ``db``.
+before the extraction needs no migration. With Flask-SQLAlchemy the models are built on the app's own ``db.Model``
+the first time they are asked for, and cached per ``db``. Plain-SQLAlchemy apps get models on the library's own
+registry and ``MetaData`` (``plain_metadata``), so no class or table of theirs can clash with them.
 """
 
 from __future__ import annotations
@@ -10,6 +11,9 @@ from __future__ import annotations
 import weakref
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
+
+from sqlalchemy import Column, DateTime, Integer, MetaData, String
+from sqlalchemy.orm import registry
 
 
 def utcnow() -> datetime:
@@ -61,3 +65,38 @@ def models_for(db: Any) -> SyncModels:
 
     _cache[db] = SyncModels(SyncState, Tombstone, AppliedOp)
     return _cache[db]
+
+
+plain_metadata = MetaData()
+_plain_registry = registry(metadata=plain_metadata)
+
+
+# The names stay private: an app may have its own `SyncState` class (the registry is separate either way).
+@_plain_registry.mapped
+class _KamiSyncState:
+    __tablename__ = "sync_state"
+
+    id = Column(Integer, primary_key=True)
+    last_seq = Column(Integer, nullable=False, default=0)
+    pruned_below = Column(Integer, nullable=False, default=0)
+
+
+@_plain_registry.mapped
+class _KamiTombstone:
+    __tablename__ = "tombstones"
+
+    entity = Column(String(16), primary_key=True)
+    id = Column(String(128), primary_key=True)  # composite wire ids '<uid>:<uid>' fit
+    change_seq = Column(Integer, nullable=False, index=True)
+    deleted_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+@_plain_registry.mapped
+class _KamiAppliedOp:
+    __tablename__ = "applied_ops"
+
+    op_id = Column(String(64), primary_key=True)
+    applied_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+PLAIN_MODELS = SyncModels(_KamiSyncState, _KamiTombstone, _KamiAppliedOp)

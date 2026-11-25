@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from operator import attrgetter
 from typing import Any
 
 # fullmatch, and [0-9] rather than \d: `$` admits a trailing newline and \d matches Unicode digits.
@@ -52,7 +53,10 @@ class Entity:
     validate: Callable[[str, str, dict[str, Any]], None] | None = None
     id_re: re.Pattern[str] = ID_RE
     id_message: str = ID_MESSAGE
-    id_of: Callable[[Any], str] = _own_id  # the id the phone knows the row by
+    id_of: Callable[[Any], str] = _own_id  # the id the phone knows the row by; default: the `id_attr` attribute
+    # The attribute holding the wire id, e.g. 'uid' when the primary key is an integer. Wire-only: the primary key
+    # stays the internal identity (foreign keys, parent-covers-child).
+    id_attr: str = "id"
     # Child -> (parent model, the child's foreign-key attribute). A child deleted in the same flush as its parent
     # gets no tombstone of its own: the parent's covers it (or its tombstone_children).
     parent: tuple[type, str] | None = None
@@ -66,6 +70,10 @@ class Entity:
     # If no row matches on restamp, restamp the tombstone of that id instead (the phone skipped that one too).
     restamp_tombstone: bool = False
     read_only_message: str = ""
+
+    def __post_init__(self) -> None:
+        if self.id_of is _own_id and self.id_attr != "id":
+            object.__setattr__(self, "id_of", attrgetter(self.id_attr))
 
 
 @dataclass(frozen=True)
