@@ -1,14 +1,15 @@
 # Project Status: kami-flask
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-25
 
 ## Now
 
-- **v0.2.0** (2026-10-16, gateway auth). Stable; used by finance, tasks, drops and pulse. History: [`../CHANGELOG.md`](../CHANGELOG.md).
+- **v0.4.0** prepared (2026-11-25): `kami_flask.claude_runner` (`RunnerClient`, `FakeRunner`) for the platform's Claude runner. Not committed, tagged or pushed yet.
+- Before it: v0.3.0 (`kami_flask.sync`). History: [`../CHANGELOG.md`](../CHANGELOG.md).
 
 ## Open
 
-- Nothing open.
+- Release 0.4.0: commit, tag `v0.4.0`, push the tag; then tasks bumps its pin.
 
 ## Next
 

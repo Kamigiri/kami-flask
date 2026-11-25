@@ -43,6 +43,26 @@ def create_app():
 def run_sync(): ...
 ```
 
+## kami_flask.claude_runner
+
+Client for the platform's internal Claude runner: one service that runs headless Claude Code **without tools** and returns
+output matching a JSON schema. Standard library only.
+
+```python
+from kami_flask.claude_runner import FakeRunner, RunnerClient, image_block, text_block
+
+runner = RunnerClient(env_url, env_token, client="tasks")    # CLAUDE_RUNNER_URL, CLAUDE_RUNNER_TOKEN
+result = runner.run(model="claude-sonnet-5-5", system=PROMPT, schema=SCHEMA,
+                    content=[image_block(jpeg, "image/jpeg"), text_block("...")], timeout_s=180)
+result.ok, result.output, result.error, result.retryable, result.limits
+```
+
+- `run()` does not raise for expected failures. `error` is `refused`, `invalid_output`, `limit`, `auth`, `timeout`, `cli`
+  or `runner` (unreachable, busy, or the request was rejected).
+- It blocks (up to `timeout_s` plus the runner's queue): call it from a background job, not from a request handler.
+- `client` must be the name the token was issued for. `output` is model output: validate it again before using it.
+- Tests: `FakeRunner(RunResult(...), ...)` answers in order (the last one repeats) and records `calls`.
+
 ## kami_flask.sync (optional, `kami-flask[sync]`)
 
 The offline-first sync server for apps with an Android client (extracted from tasks in 0.3). SQLite only, and

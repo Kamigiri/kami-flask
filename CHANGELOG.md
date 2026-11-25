@@ -6,6 +6,12 @@ Release: move **Unreleased** to a dated version, bump `pyproject.toml` and
 
 ## Unreleased
 
+## 0.4.0 (2026-11-25)
+
+- `kami_flask.claude_runner`: client for the platform's internal Claude runner (headless Claude Code without tools):
+  `RunnerClient(url, token, client)` with `run(...)` -> `RunResult` and `limits()`, `image_block` / `text_block`, and
+  `FakeRunner` (same interface) for app tests. Standard library only, no new dependency.
+
 ## 0.3.0 (2026-11-12)
 
 - `kami_flask.sync` (optional extra `kami-flask[sync]`, SQLAlchemy only there): the offline-first sync server
