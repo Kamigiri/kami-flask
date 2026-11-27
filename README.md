@@ -18,7 +18,8 @@ The shared Flask backend framework for the Kamigiri apps. One `KamiApp` gives an
 - **Metrics**: Prometheus on `METRICS_PORT` (not proxied by nginx), RED metrics per route,
   `app_info`, errors, and background jobs via `job("name")`
 - **Errors** as `{"error": msg}` (short names for werkzeug defaults, e.g. `"Not Found"`), **SPA serving** (WhiteNoise + index.html fallback)
-- **pytest plugin**: `client` (logged in), `anon_client`, `bearer_client`, `gateway_client`
+- **Attention**: apps report what needs the owner to a front door on the internal network (below)
+- **pytest plugin**: `client` (logged in), `anon_client`, `bearer_client`, `gateway_client`, `internal_client`
 
 ```python
 from dataclasses import dataclass
@@ -42,6 +43,38 @@ def create_app():
 @job("google_sync")
 def run_sync(): ...
 ```
+
+## kami_flask.attention
+
+An app says what needs its owner **right now**; the platform's front door asks and shows it. Items are live state: they
+disappear when the cause is resolved.
+
+```python
+from datetime import UTC, datetime
+
+from kami_flask import attention
+
+@attention.provider            # one per app, called per request
+def items() -> list[attention.Item]:
+    return [attention.Item(id="review:month", kind="review", severity="warn", title="7 transactions to review",
+                           at=datetime.now(UTC), link="review", count=7)]
+
+@attention.ack_handler         # optional, for event-like items (ackable=True); False = unknown id
+def ack(item_id: str) -> bool:
+    return mark_seen(item_id)
+```
+
+Import the module that declares them in the app factory (any time before the first request).
+
+- `Item`: `id` (stable, app-scoped, no `/`), `kind`, `severity` (`info` | `warn` | `urgent`), `title` (cut at 120),
+  `detail` (cut at 200), `link` (path relative to the app root), `at` (UTC; naive is taken as UTC), `ackable`, `count`.
+  `title` and `detail` are plain text, never a secret or a URL.
+- `GET /api/internal/attention` -> `{"items": [...], "generatedAt": ...}` (camelCase JSON).
+- `POST /api/internal/attention/<id>/ack` -> 204; 404 for an unknown id or no ack handler; 400 for a non-ackable item.
+- Auth: Bearer `INTERNAL_TOKEN` only (not a session, `API_TOKEN` or the gateway). No token or no provider: 404.
+- A provider that raises answers 500 with the usual JSON error and a log line.
+- Keep the routes off the public side: the reverse proxy must deny `/<app>/api/internal`.
+- Tests: the `internal_client` fixture sends the token; `attention.reset()` forgets the registration (it is per process).
 
 ## kami_flask.claude_runner
 

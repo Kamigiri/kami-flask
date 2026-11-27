@@ -52,6 +52,10 @@ class Settings:
     gateway_secret: str = env("GATEWAY_SECRET", "")
     gateway_logout_url: str = env("GATEWAY_LOGOUT_URL", "")  # where the SPA sends "log out"
 
+    # Bearer token for /api/internal/attention (kami_flask.attention), shared with the platform's front door on the
+    # internal network. Empty = those routes answer 404.
+    internal_token: str = env("INTERNAL_TOKEN", "")
+
     session_cookie_secure: bool = env("SESSION_COOKIE_SECURE", False)
     session_cookie_name: str = env("SESSION_COOKIE_NAME", "")  # default: <app>_session
     session_days: int = env("SESSION_DAYS", 14)

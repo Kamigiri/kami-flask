@@ -1,6 +1,7 @@
 """Single-user authentication: session cookie for the web app, optional Bearer token.
 
-Every /api endpoint is protected; only the paths in ``OPEN_PATHS`` stay open. Cookie-authed
+Every /api endpoint is protected; only the paths in ``OPEN_PATHS`` stay open, and the subtrees in
+``EXEMPT_PREFIXES`` guard themselves. Cookie-authed
 mutations must send ``X-Requested-With: XMLHttpRequest`` (CSRF hardening: a cross-site
 form cannot set that header). Static SPA files are not under /api and stay public, so the
 login screen can load.
@@ -20,6 +21,8 @@ if TYPE_CHECKING:
     from .app import KamiApp
 
 OPEN_PATHS = {"/api/health", "/api/ready", "/api/version", "/api/auth/login"}
+# Subtrees that skip the login because they check their own credential (kami_flask.attention: INTERNAL_TOKEN).
+EXEMPT_PREFIXES = ("/api/internal/attention",)
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 THROTTLE_WINDOW_SEC = 300
 THROTTLE_MAX_FAILURES = 5
@@ -86,6 +89,8 @@ def init(app: Flask) -> None:
     def _require_auth():
         path = request.path
         if not path.startswith("/api") or path in OPEN_PATHS:
+            return None
+        if any(path == prefix or path.startswith(prefix + "/") for prefix in EXEMPT_PREFIXES):
             return None
 
         gateway = gateway_user()

@@ -6,6 +6,18 @@ Release: move **Unreleased** to a dated version, bump `pyproject.toml` and
 
 ## Unreleased
 
+## 0.5.0 (2026-11-27)
+
+- `kami_flask.attention`: one `@attention.provider` (and optionally `@attention.ack_handler`) gives an app
+  `GET /api/internal/attention` and `POST /api/internal/attention/<id>/ack` (204, 404 unknown id or no handler,
+  400 non-ackable id). `attention.Item` is the item type (long `title` / `detail` are cut to 120 / 200 characters).
+- New setting `INTERNAL_TOKEN` (empty by default): the Bearer token for those routes, which a session, `API_TOKEN` or
+  the gateway do not open. Without a token or a provider they answer 404; in production a provider without a token is
+  logged as a warning, never refused.
+- The login guard skips `/api/internal/attention` only (`auth.EXEMPT_PREFIXES`); an app's other `/api/internal/*`
+  routes are guarded as before.
+- pytest plugin: `internal_client` fixture.
+
 ## 0.4.0 (2026-11-25)
 
 - `kami_flask.claude_runner`: client for the platform's internal Claude runner (headless Claude Code without tools):

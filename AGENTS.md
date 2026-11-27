@@ -5,7 +5,7 @@ public git repo (`Kamigiri/kami-flask`, branch `main`); the platform repo ignore
 Overview and usage: `README.md`. Design notes (private, platform repo): `../../lan/docs/plans/kami-flask.md`; do not link them from public files.
 
 - `src/kami_flask/`: one module per concern (settings, auth, health, logs, metrics, jobs,
-  errors, spa, testing, claude_runner); `app.py` wires them in a fixed order (logs/metrics → auth guard →
+  errors, spa, testing, claude_runner, attention); `app.py` wires them in a fixed order (logs/metrics → auth guard →
   app hooks). Keep that order.
 - Behaviour changes are platform changes: both apps depend on them. Add a CHANGELOG line
   under **Unreleased**, release with a tag, then bump the pin in each app.

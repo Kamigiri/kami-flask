@@ -10,7 +10,7 @@ from typing import Any
 from flask import Flask
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import auth, errors, health, logs, metrics, spa
+from . import attention, auth, errors, health, logs, metrics, spa
 from .settings import Settings
 
 
@@ -60,6 +60,7 @@ class KamiApp:
         auth.init(app)
         health.init(app, self)
         errors.init(app, self)
+        attention.init(app)
 
         if settings.trusted_proxies > 0:
             n = settings.trusted_proxies
@@ -87,4 +88,5 @@ class KamiApp:
 
     def serve_spa(self, dist: str | Path | None = None) -> None:
         """Serve the built SPA. Call it last, after the app registered its routes."""
+        attention.warn_if_off(self.flask)
         spa.init(self.flask, dist if dist is not None else self.settings.web_dist)

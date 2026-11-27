@@ -7,6 +7,7 @@ fixtures here build on it:
 - ``anon_client``: same client class, not logged in.
 - ``bearer_client``: no session, ``Authorization: Bearer <api token>`` on every request.
 - ``gateway_client``: no session, sends ``Remote-User`` + ``X-Kami-Gateway`` like the proxy does.
+- ``internal_client``: no session, ``Authorization: Bearer <internal token>`` (for ``kami_flask.attention``).
 
 ``app.test_client()`` stays a plain FlaskClient, for tests that need the raw behaviour
 (e.g. checking the CSRF header requirement).
@@ -22,6 +23,7 @@ from werkzeug.datastructures import Headers
 TEST_API_TOKEN = "kami-test-api-token-0123456789"
 TEST_GATEWAY_SECRET = "kami-test-gateway-secret-0123456789"
 TEST_GATEWAY_USER = "owner"
+TEST_INTERNAL_TOKEN = "kami-test-internal-token-0123456789"
 
 
 class KamiTestClient(FlaskClient):
@@ -82,3 +84,11 @@ def gateway_client(app: Flask) -> KamiTestClient:
     if not settings.gateway_secret:
         settings.gateway_secret = TEST_GATEWAY_SECRET
     return make_client(app, gateway=TEST_GATEWAY_USER)
+
+
+@pytest.fixture
+def internal_client(app: Flask) -> KamiTestClient:
+    settings = app.extensions["kami"].settings
+    if not settings.internal_token:
+        settings.internal_token = TEST_INTERNAL_TOKEN
+    return make_client(app, bearer=settings.internal_token)
